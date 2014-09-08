@@ -808,10 +808,10 @@ sub frecc
 		print CONFFRECC "inputFormat=BAM\n";
 		print CONFFRECC "mateOrientation=FR\n";
 
-#		print CONFFRECC "\n[control]\n";
-#		print CONFFRECC "mateFile=$bam[0]\n";
-#		print CONFFRECC "inputFormat=BAM\n";
-#		print CONFFRECC "mateOrientation=FR\n";
+		print CONFFRECC "\n[control]\n";
+		print CONFFRECC "mateFile=$bam[0]\n";
+		print CONFFRECC "inputFormat=BAM\n";
+		print CONFFRECC "mateOrientation=FR\n";
 
 		close (CONFFRECC);
 
