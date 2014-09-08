@@ -1,0 +1,865 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Getopt::Long;
+use Cwd;
+use Cwd 'abs_path';
+#use diagnostics;
+#use Carp;
+#use List::Util qw(sum);
+#TODO: make a sanity check to confirm all input files (e.g. genome, config) actually exist
+
+&main;
+exit;
+
+sub _version
+{
+	return "20140724";
+} 
+
+
+sub main 
+{
+  &usage if (@ARGV < 1);
+	  
+  my $command = shift(@ARGV);
+  my %func = (usage=>\&usage,mapping=>\&mapping, vc=>\&variantcalling, vcfilter=>\&vcfilter, pindel=>\&pindel, frecc=>\&frecc);
+  die("Unknown command \"$command\".\n") if (!defined($func{$command}));
+  &{$func{$command}};
+}
+
+
+sub usage 
+{
+	my $version = _version;
+	die(qq/
+Usage:  terminator <command> [<arguments>]\n
+Usage stuff to go here\n
+
+\n/);
+}
+
+
+sub mapping
+{
+	# INPUT VARIABLES
+	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef);
+	
+	my $result = GetOptions ("c|conf:s"   => \$opts{CONF},
+                                 "d|dir:s"    => \$opts{DIR},
+                                 "t|threads:s"=> \$opts{THREADS},
+                                 "s|submit:s" => \$opts{SUBMIT},
+                                 "sm|sample:s"=> \$opts{SAMPLES}
+                                 );
+    
+    my $usage = qq/
+	Usage:  terminator mapping [options]
+	Options:
+	##\n\n/ ;             
+	
+	die ($usage) if ( !defined $opts{CONF} || !defined $opts{DIR} );
+	die ("Configuration filepath defined, but file does not exist!") if ( ! -e $opts{CONF});
+	my $opts = \%opts;
+
+
+	# CONFIGURATION OF THE PIPELINE
+	my $conf = _load_conf_file ( $$opts{CONF} );
+	$$conf{WDIR} = getcwd;	
+	my @dirsplit = split("/",$$opts{DIR});
+	$$conf{PROJECT} = pop @dirsplit;
+
+
+	# Get Samples Names
+	chdir $$opts{DIR};
+	$$conf{DIR} = getcwd;
+
+	if (defined $$opts{SAMPLES})
+	{
+		@{$$conf{SAMPLES}} = split(",", $$opts{SAMPLES});
+	} else {
+		my @files = glob("*");
+		for ( @files )
+		{
+			next if (! -d $_);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			push @{$$conf{SAMPLES}}, $_;
+		}
+	}
+	
+	
+	# CREATING BASH SCRIPT FOR FASTQ QUALITY CONTROL AND MAPPING
+	my @mapping_bash;
+	for my $sample (@{$$conf{SAMPLES}}) 
+	{
+		chdir $sample;
+		push(@mapping_bash, getcwd."/".$sample."_mapping.sh");
+		open (MAPPINGSH, ">$sample"."_mapping.sh");
+		print MAPPINGSH "#!/bin/bash\n#".$sample."_mapping.sh\n";
+		
+		# REDIRECT STDOUT
+		print MAPPINGSH "LOGFILE=".getcwd."/".$sample."_mapping.out\n";
+		print MAPPINGSH "exec 6>&1\n";
+		print MAPPINGSH "exec > \$LOGFILE\n\n";
+
+	
+		# GUNZIP files
+		print MAPPINGSH 'echo \# Un-compress fastq files'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ\/*fastq.gz); do 
+			gunzip \$i
+		done
+		
+		
+		/;
+
+		#####################
+		
+		#	QUALITY	CONTROL	#
+		
+		#####################
+		
+		# FASTQ_QC Folder
+		my $fastqQc = "$$conf{DIR}\/$sample\/FASTQ_QC";
+		print MAPPINGSH 'echo \# Running FASTX utils'."\n";
+		print MAPPINGSH "mkdir -p $fastqQc";
+				
+		# FASTX utils
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ\/*fastq); do 
+		
+			STATS=\$(basename \$i | sed \'s\/fastq\/fastq.qualitystats\/\')
+			$$conf{FASTXQUALSTATS} -Q 33 -i \$i > $fastqQc\/\$STATS
+			
+			BOXPLOT=\$(basename \$STATS | sed \'s\/fastq.qualitystats\/fastq.boxplot.png\/\')
+			$$conf{FASTQQUALBOXPLOT} -i $fastqQc\/\$STATS -o $fastqQc\/\$BOXPLOT
+		
+			NUCPLOT=\$(basename \$STATS | sed \'s\/fastq.qualitystats\/fastq.nucdistr.png\/\')
+			$$conf{FASTXNDISTPLOT} -i $fastqQc\/\$STATS -o $fastqQc\/\$NUCPLOT
+		
+		done
+		
+		
+		/;
+		
+		
+		# NGSQCToolkit Trimming reads
+		print MAPPINGSH 'echo \# Trimming reads'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq); do
+			FASTQ1=\$i
+			FASTQ2=\$(echo \$FASTQ1 | sed \'s\/_1.fastq\/_2.fastq\/\')
+			$$conf{TRIMMINGREADS} -i \$FASTQ1 -irev \$FASTQ2 -q $$conf{TRIMMINGQUAL} -n $$conf{TRIMMINGLENGTH}
+			mv $$conf{DIR}\/$sample\/FASTQ\/*trimmed $$conf{DIR}\/$sample\/FASTQ_QC\/.
+		done
+		
+		
+		/;
+		
+		# NGSQCToolkit Illumina QC
+		print MAPPINGSH 'echo \# Illumina QC'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed); do
+			FASTQ1=\$i
+			FASTQ2=\$(echo \$FASTQ1 | sed \'s\/_1.fastq\/_2.fastq\/\')	 
+			$$conf{ILLUQC} -pe \$FASTQ1 \$FASTQ2 N 5 -l $$conf{CUTOFFREADLEN4HQ} -o $$conf{DIR}\/$sample\/FASTQ_QC
+		done
+		
+		
+		/;
+		
+		# NGSQCToolkit Ambiguity Filtering
+		print MAPPINGSH 'echo \# Ambiguity Filtering'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered); do
+			FASTQ1=\$i
+			FASTQ2=\$(echo \$FASTQ1 | sed \'s\/_1.fastq\/_2.fastq\/\')	 
+			$$conf{AMBIGUITYFILT} -i \$FASTQ1 -irev \$FASTQ2 -p $$conf{PERCENTN}
+		done
+		
+		
+		/;
+		
+		# NGSQCToolkit Ambiguity Filtering UnPaired reads
+		print MAPPINGSH 'echo \# Ambiguity Filtering'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ_QC\/*_unPaired_HQReads); do
+			$$conf{AMBIGUITYFILT} -i \$i -p $$conf{PERCENTN}
+		done
+		
+		
+		/;		
+		
+		
+		# FASTX utils with trimmed reads
+		print MAPPINGSH 'echo \# Running FASTX utils with trimmed reads'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $fastqQc\/*.fastq_trimmed_filtered_trimmed $fastqQc\/*_HQReads_trimmed); do 
+		
+			STATS=\$i".qualitystats"
+			$$conf{FASTXQUALSTATS} -Q 33 -i \$i > \$STATS
+			
+			BOXPLOT=\$STATS".boxplot.png"
+			$$conf{FASTQQUALBOXPLOT} -i \$STATS -o \$BOXPLOT
+		
+			NUCPLOT=\$STATS".nucdistr.png"
+			$$conf{FASTXNDISTPLOT} -i \$STATS -o \$NUCPLOT
+		
+			HIST=\$STATS".length"
+			cat \$i | awk \'{if(NR\%4==2) print length(\$1)}' > \$HIST
+		done
+		
+		
+		/;
+		
+
+
+		# Table Read Count By file
+		print MAPPINGSH 'echo \# Table Read Count'."\n";
+		my $summary_reads_table = "$$conf{DIR}\/$sample\/${sample}_summary_reads.txt";
+		print MAPPINGSH qq/
+		printf "Step\\tRead1\\tRead2\\tUnPaired\\tMean_Length1\\tMean_Length2\\tMean_Length_UnPaired\\n" > $summary_reads_table
+		
+		printf "Original\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ\/*_2.fastq | wc -l)"\\t" >> $summary_reads_table
+		printf "NA\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ\/*_2.fastq | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf "NA\\n" >> $summary_reads_table
+		
+		printf "Trimmed1\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf "NA\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf "NA\\n" >> $summary_reads_table
+
+		printf "Filtered\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads | wc -l)"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\n" >> $summary_reads_table
+
+
+		printf "Trimmed2\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
+		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\n" >> $summary_reads_table		
+		
+		/;		
+
+
+
+		#####################
+		
+		#	MAPPING-BWA		#
+		
+		#####################
+
+		
+		# MAPPING Folder
+		my $mapping = "$$conf{DIR}\/$sample\/MAPPING";
+		print MAPPINGSH 'echo \# Running mapping'."\n";
+		print MAPPINGSH "mkdir -p $mapping\n";		
+				
+		# BWA ALN-SAMPE-SAMSE
+		print MAPPINGSH 'echo \# Running BWA ALIGN-SAMPE-SAMSE'."\n";
+		print MAPPINGSH qq/
+		for FASTQ1 in \$(ls $fastqQc\/*_1.fastq_trimmed_filtered_trimmed); do
+			FASTQ2=\$(echo \$FASTQ1 | sed \'s\/_1.fastq\/_2.fastq\/\')
+			LIB=\$(basename \$FASTQ1 | awk \'{split(\$0,a,\"_1.fastq\"); print a[1]}\')
+			FASTQ3=\$(ls $fastqQc\/\$LIB*unPaired_HQReads_trimmed)
+			
+			SAI1=\$FASTQ1.sai
+			SAI2=\$FASTQ2.sai
+			SAI3=\$FASTQ3.unpaired.sai
+			$$conf{BWA} aln $$conf{GENOME} \$FASTQ1 > \$SAI1
+			$$conf{BWA} aln $$conf{GENOME} \$FASTQ2 > \$SAI2
+			$$conf{BWA} aln $$conf{GENOME} \$FASTQ3 > \$SAI3
+			
+			$$conf{BWA} sampe -r \@RG\"\\t\"ID:${sample}"\\t\"PL:illumina"\\t\"PU:${sample}_\$LIB"\\t\"LB:\$LIB"\\t\"SM:$sample $$conf{GENOME} \$SAI1 \$SAI2 \$FASTQ1 \$FASTQ2 | $$conf{SAMTOOLS} view -hSb -> $mapping\/${sample}_\${LIB}_pe.bam
+
+			$$conf{BWA} samse -r \@RG\"\\t\"ID:${sample}"\\t\"PL:illumina"\\t\"PU:${sample}_\$LIB"\\t\"LB:\$LIB"\\t\"SM:$sample $$conf{GENOME} \$SAI3 \$FASTQ3  | $$conf{SAMTOOLS} view -hSb - > $mapping\/${sample}_\${LIB}_se.bam
+
+			 rm \$SAI1 \$SAI2 \$SAI3
+			 
+			 $$conf{SAMTOOLS} merge -f $mapping\/${sample}_\${LIB}.bwa.bam $mapping\/${sample}_\${LIB}_pe.bam $mapping\/${sample}_\${LIB}_se.bam
+		done
+		
+		/;
+		
+		#####################
+		
+		#	BAM PROCESSING	#
+		
+		#####################
+		
+		print MAPPINGSH 'echo \# BAM process'."\n";
+		print MAPPINGSH qq/
+		for BAM in \$(ls $mapping\/*bwa.bam); do
+			BWASORT=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_sort.bam\/\')
+			TARGETSV=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_sv.intervals\/\')
+			BWASV=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_sv.bam\/\')
+			UNIQUE=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq.bam\/\')
+			MULTIMAPPED=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_unmapped.bam\/\')
+			FIXED=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix.bam\/\')
+			SORTED=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix_sort.bam\/\')
+			DUPL=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix_sort_dup.bam\/\')
+			DUPLMETRICS=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix_sort_dup.metrics\/\')
+			FIXED2=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix_sort_dup_fix.bam\/\')
+			TARGETRAC=\$(echo \$BAM | sed \'s\/bwa.bam\/bwa_uniq_fix_sort_dup_fix.intervals\/\')			
+			REALIGNED=\$(echo \$BAM | sed \'s\/bwa.bam\/realigned.bam\/\')
+
+			# For Structural Variant Calling
+
+			java -jar $$conf{PICARD}\/SortSam.jar INPUT=\$BAM OUTPUT=\$BWASORT SO=coordinate VALIDATION_STRINGENCY=LENIENT
+			
+			$$conf{SAMTOOLS} index \$BWASORT
+
+			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -o \$TARGETSV
+			
+			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
+
+			$$conf{SAMTOOLS} index \$BWASV
+			
+
+			# For Variant Calling
+			$$conf{SAMTOOLS} view -h \$BAM | awk \'{if(\/^\@\/){print}if(\/XT:A:U\/){print}if(\/XT:A:R\/ && \/X0:i:1\/){print}if(\/XT:A:M\/){print}}' | $$conf{SAMTOOLS} view -hSbF 4 - > \$UNIQUE
+			$$conf{SAMTOOLS} view -h \$BAM | $$conf{SAMTOOLS} view -hSbF 256 - > \$MULTIMAPPED \# Reads that mapped to more than one postn in the genome.
+
+			$$conf{SAMTOOLS} fixmate \$UNIQUE \$FIXED
+			$$conf{SAMTOOLS} fixmate \$UNMAPPED \$FIXED
+			
+			java -jar $$conf{PICARD}\/SortSam.jar INPUT=\$FIXED OUTPUT=\$SORTED SO=coordinate VALIDATION_STRINGENCY=LENIENT
+			
+			java -jar $$conf{PICARD}\/MarkDuplicates.jar INPUT=\$SORTED OUTPUT=\$DUPL METRICS_FILE=\$DUPLMETRICS REMOVE_DUPLICATES=true VALIDATION_STRINGENCY=LENIENT
+			
+			$$conf{SAMTOOLS} index \$DUPL
+			
+			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$DUPL -R $$conf{GENOME} -o \$TARGETRAC
+			
+			java -jar $$conf{GATK} -T IndelRealigner -I \$DUPL -R $$conf{GENOME} -targetIntervals \$TARGETRAC -o \$REALIGNED --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
+
+			$$conf{SAMTOOLS} index \$REALIGNED
+			
+		done
+			
+		/;
+		
+		
+		####################################################
+		
+		#	BAM COVERAGE AND GC CONTENT	AND INSERT METRICS #
+		
+		####################################################
+		my $coverage = "$$conf{DIR}\/$sample\/COVERAGE";		
+		print MAPPINGSH 'echo \# COVERAGE'."\n";
+		print MAPPINGSH "mkdir -p $coverage\n\n";					
+		print MAPPINGSH qq/		
+		for BAM in \$(ls $mapping\/*realigned.bam); do
+			COV=\$(basename \$BAM | sed \'s\/realigned.bam\/realigned.coverage\/\')
+			java -jar $$conf{GATK} -T DepthOfCoverage -o $coverage\/\$COV -R $$conf{GENOME} -I \$BAM
+			
+			FASTQCPREF=\$(echo \$BAM | sed 's\/.bam\/\/')
+			$$conf{FASTQC} \$BAM
+			mv \${FASTQCPREF}_fastqc\/Images\/per_base_gc_content.png \${FASTQCPREF}_per_base_gc_content.png
+			rm -r \${FASTQCPREF}_fastqc.zip \${FASTQCPREF}_fastqc
+			
+			GCMETRICS=\$(echo \$BAM | sed 's\/.bam\/.picard.gcmetrics\/')
+			CHARTOUT=\$(echo \$BAM | sed 's\/.bam\/.picard.gcmetrics.pdf\/')
+			
+			java -jar $$conf{PICARD}\/CollectGcBiasMetrics.jar INPUT=\$BAM R=$$conf{GENOME} O=\$GCMETRICS CHART_OUTPUT=\$CHARTOUT VALIDATION_STRINGENCY=LENIENT
+			
+			INSERTMETRICS=\$(echo \$BAM | sed 's\/.bam\/.insertmetrics\/')
+			HISTMETRICS=\$(echo \$BAM | sed 's\/.bam\/.insertmetrics.pdf\/')
+
+			java -jar $$conf{PICARD}\/CollectInsertSizeMetrics.jar INPUT=\$BAM O=\$INSERTMETRICS HISTOGRAM_FILE=\$HISTMETRICS VALIDATION_STRINGENCY=LENIENT
+			
+			QUALITYSCORE=\$(echo \$BAM | sed 's\/.bam\/.qualityscore\/')
+			CHARQCDIST=\$(echo \$BAM | sed 's\/.bam\/.qualityscore.pdf\/')
+			
+			java -jar $$conf{PICARD}\/QualityScoreDistribution.jar INPUT=\$BAM O=\$QUALITYSCORE CHART_OUTPUT=\$CHARQCDIST
+
+		done
+			
+		/;
+						
+
+
+		#########################
+		
+		#	CLOSING BASH FILE	#
+		
+		#########################
+		
+		# COMPRESS FASTQ FILES
+		print MAPPINGSH 'echo \# Compress FASTQ files'."\n";
+		print MAPPINGSH qq/
+		for i in \$(ls $$conf{DIR}\/$sample\/FASTQ\/*.fastq); do
+			gzip \$i	
+		done
+		
+		
+		/;
+		
+		# Restore stdout and close file descriptor #6.
+		print MAPPINGSH "exec 1>&6 6>&-\n";
+		print MAPPINGSH "exit 0";
+
+
+		close (MAPPINGSH);
+		chdir $$conf{DIR};
+	}
+
+
+	# CRON BASH FILE TO SUBMIT MAPPING BASH SCRIPTS 
+	
+	my $map_cron = $$conf{DIR}."/".$$conf{PROJECT}."_mapping.sh";
+	open(MAPCRON,">$map_cron");
+	print MAPCRON "#!/bin/bash\n#$map_cron\n";
+	my $i = 0;
+	for my $map_bash (@mapping_bash) {
+		my $map_err = $map_bash;
+		$map_err =~ s/\.sh/\.err/;
+		print MAPCRON "nohup bash ".$map_bash." > ".$map_err." &\n";
+		$i ++;
+		if ($i == $$opts{THREADS}) {
+			print MAPCRON "wait\n";
+			$i = 0;
+		}
+	}
+	
+	
+	# SUBMIT BASH SCRIPT
+	system("bash $map_cron ") if (defined($$opts{SUBMIT})) ;
+	
+	
+	# CHANGE WORKING DIRECTORY 
+		
+	chdir $$conf{WDIR};
+	
+
+
+
+
+
+}
+
+
+sub variantcalling
+{
+	# INPUT VARIABLES
+	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef);
+	
+	my $result = GetOptions ("c|conf:s"  => \$opts{CONF},
+							"d|dir:s"   => \$opts{DIR},
+							"t|threads:s"   => \$opts{THREADS},
+							"s|submit:s"   => \$opts{SUBMIT},
+							"sm|samples:s" => \$opts{SAMPLES}
+							);
+    
+    my $usage = qq/
+	Usage:  terminator vc [options]
+	Options:
+	##\n\n/ ;             
+
+	
+	die ($usage) if ( !defined $opts{CONF} || !defined $opts{DIR} );
+
+	my $opts = \%opts;
+
+
+	# CONFIGURATION OF THE PIPELINE
+	my $conf = _load_conf_file ( $$opts{CONF} );
+	$$conf{WDIR} = getcwd;	
+	my @dirsplit = split("/",$$opts{DIR});
+	$$conf{PROJECT} = pop @dirsplit;
+	$$conf{SCRIPTNAME} = abs_path($0);
+
+
+	# Get Samples Names
+	chdir $$opts{DIR};
+	$$conf{DIR} = getcwd;
+
+	if (defined $$opts{SAMPLES})
+	{
+		@{$$conf{SAMPLES}} = split(",", $$opts{SAMPLES});
+	} else {
+		my @files = glob("*");
+		for ( @files )
+		{
+			next if (! -d $_);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			push @{$$conf{SAMPLES}}, $_;
+		}
+	}
+
+
+	# VARIANT CALLING SHELL SCRIPT
+	
+	my $vc_bash = $$conf{DIR}."/".$$conf{PROJECT}."_variantcalling.sh";
+	open(VCSH,">$vc_bash");
+	print VCSH "#!/bin/bash\n#$vc_bash\n";
+	
+		
+	# REDIRECT STDOUT
+	print VCSH "LOGFILE=".getcwd."/".$$conf{PROJECT}."_variantcalling.out\n";
+	print VCSH "exec 6>&1\n";
+	print VCSH "exec > \$LOGFILE\n\n";
+			
+	print VCSH "mkdir -p $$conf{DIR}/VARIANTCALLING\n\n";
+	
+	# SAMTOOLS MPILEUP
+	print VCSH "# SAMTOOLS MPILEUP\n\n";
+	print VCSH "$$conf{SAMTOOLS} mpileup -q 20 -Q 20 -C50 -B -DSsugf $$conf{GENOME} ";
+	for my $sample (@{$$conf{SAMPLES}}) {
+		my @bams = glob("$sample/MAPPING/*realigned.bam");
+		for my $bam (@bams)
+		{
+			print VCSH "$$conf{DIR}/$bam ";
+		}
+	}
+	print VCSH "| bcftools view -vcg - > VARIANTCALLING/$$conf{PROJECT}.raw.samtools.vcf\n\n";
+	
+	print VCSH "cat VARIANTCALLING/$$conf{PROJECT}.raw.samtools.vcf | $$conf{VCFANNOTATE} -f $$conf{VCFANNOTATE_SAMTOOLS1} | $$conf{SCRIPTNAME} vcfilter | awk \'/#/ || /PASS/\' | $$conf{VCFANNOTATE} -f $$conf{VCFANNOTATE_SAMTOOLS2} > VARIANTCALLING/$$conf{PROJECT}.samtools.vcf\n\n";
+	
+	print VCSH "java -jar $$conf{GATK} -T VariantFiltration -R $$conf{GENOME} --variant VARIANTCALLING/$$conf{PROJECT}.samtools.vcf -o VARIANTCALLING/$$conf{PROJECT}.samtools.tmp.vcf $$conf{GATKFILTER}\n\n";
+
+	print VCSH "mv VARIANTCALLING/$$conf{PROJECT}.samtools.tmp.vcf VARIANTCALLING/$$conf{PROJECT}.samtools.vcf\n\n";
+
+	# GATK
+	# Why is not GATK called with parallel processing? MT=>to save memory for other applications, can be added in later.
+	print VCSH "# GATK\n";	
+	print VCSH "java -jar $$conf{GATK} -T UnifiedGenotyper -R $$conf{GENOME} -ploidy 1 -glm BOTH -o VARIANTCALLING/$$conf{PROJECT}.raw1.gatk.vcf";
+	for my $sample (@{$$conf{SAMPLES}}) {
+		my @bams = glob("$sample/MAPPING/*realigned.bam");
+		for my $bam (@bams)
+		{
+			print VCSH " -I $$conf{DIR}/$bam ";
+		}
+	}
+	print VCSH "\n\n";
+	
+	print VCSH "java -jar $$conf{GATK} -T VariantFiltration -R $$conf{GENOME} --variant VARIANTCALLING/$$conf{PROJECT}.raw1.gatk.vcf -o VARIANTCALLING/$$conf{PROJECT}.raw2.gatk.vcf $$conf{GATKFILTER}\n\n";
+
+	print VCSH "cat VARIANTCALLING/$$conf{PROJECT}.raw2.gatk.vcf | $$conf{VCFANNOTATE} -f RefN | awk '/#/ || /PASS/' | $$conf{VCFANNOTATE} -f $$conf{VCFANNOTATE_GATK} > VARIANTCALLING/$$conf{PROJECT}.gatk.vcf\n\n";
+
+		
+
+	# SNPEFF
+	print VCSH "# SNPEFF SAMTOOLS\n";	
+	print VCSH "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} VARIANTCALLING/$$conf{PROJECT}.samtools.vcf > VARIANTCALLING/$$conf{PROJECT}.samtools.snpEff.vcf\n\n";		
+	print VCSH "# SNPEFF GATK\n";
+	print VCSH "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} VARIANTCALLING/$$conf{PROJECT}.gatk.vcf> VARIANTCALLING/$$conf{PROJECT}.gatk.snpEff.vcf\n\n";	
+
+
+	# SUBMIT BASH SCRIPT
+	my $vc_err = $$conf{PROJECT}."_variantcalling.err";
+	system("bash $vc_bash > $vc_err") if (defined($$opts{SUBMIT})) ;
+	
+	
+	chdir $$conf{WDIR};
+
+
+
+}
+
+
+sub vcfilter
+{
+	while(<STDIN>)
+	{
+		if($_=~/^#/)
+		{
+			print $_;
+		} else {
+			my @l = split("\t");
+			if ($l[7]=~/DP=(\d+);.*DP4=.*,.*,(.*),(.*);MQ.*/)
+			{
+				if($2>0 && $3>0 && $1!=$2 && $1!=$3)
+				{
+					my $per1 = ($2*100)/($2+$3);
+					my $per2 = ($3*100)/($2+$3);
+					if($per1>1 && $per2>1)
+					{
+						print $_;
+					}
+				}
+				if(($2||$3)==$1 && $1<10)
+				{
+					print $_;
+				}	
+			}
+		}
+	}
+}
+
+
+sub pindel
+{
+	# INPUT VARIABLES
+	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef, BREAKD=>undef);
+	
+	my $result = GetOptions ("c|conf:s"  => \$opts{CONF},
+							"d|dir:s"   => \$opts{DIR},
+							"t|threads:s"   => \$opts{THREADS},
+							"s|submit:s"   => \$opts{SUBMIT},
+							"b|breakdancer:s"   => \$opts{BREAKD},
+							"sm|samples:s" => \$opts{SAMPLES}
+							);
+    
+    my $usage = qq/
+	Usage:  terminator pindel [options]
+	Options:
+	##\n\n/ ;             
+
+	
+	die ($usage) if ( !defined $opts{CONF} || !defined $opts{DIR} );
+
+	my $opts = \%opts;
+	
+	# CONFIGURATION OF THE PIPELINE
+	my $conf = _load_conf_file ( $$opts{CONF} );
+	$$conf{WDIR} = getcwd;	
+	my @dirsplit = split("/",$$opts{DIR});
+	$$conf{PROJECT} = pop @dirsplit;
+	$$conf{SCRIPTNAME} = $0;
+
+
+	# Get Samples Names
+	chdir $$opts{DIR};
+	$$conf{DIR} = getcwd;
+
+	if (defined $$opts{SAMPLES})
+	{
+		@{$$conf{SAMPLES}} = split(",", $$opts{SAMPLES});
+	} else {
+		my @files = glob("*");
+		for ( @files )
+		{
+			next if (! -d $_);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			push @{$$conf{SAMPLES}}, $_;
+		}
+	}
+
+
+	# PINDEL SHELL SCRIPT
+	
+	my $pindel_bash = $$conf{DIR}."/".$$conf{PROJECT}."_pindel.sh";
+	open (PINDEL,">$pindel_bash");
+	print PINDEL "#!/bin/bash\n#$pindel_bash\n";
+	
+		
+	# REDIRECT STDOUT
+	print PINDEL "LOGFILE=".getcwd."/".$$conf{PROJECT}."_pindel.out\n";
+	print PINDEL "exec 6>&1\n";
+	print PINDEL "exec > \$LOGFILE\n\n";
+
+	#print PINDEL "mkdir -p $$conf{DIR}/STRUCTURAL_VARIANT\n";
+	print PINDEL "mkdir -p $$conf{DIR}/STRUCTURAL_VARIANT\n\n";
+
+
+	# RUNNING BREAKDANCER
+	if (defined($$opts{BREAKD}))
+	{
+		# BREAKDANCER CONFIGURATION FILE
+		my @bams = glob("*/MAPPING/*bwa_sv.bam");
+		my $breakd_conf = $$conf{DIR}."/STRUCTURAL_VARIANT/".$$conf{PROJECT}."_breakdancer.cfg";
+		print PINDEL "# BREAKDANCER\n";
+		print PINDEL "$$conf{BDCONFIG} ".join(" ", @bams)." > $breakd_conf\n";
+
+		# BREAKDANCER Execution
+		$$conf{BD_OUT} = $$conf{DIR}."/STRUCTURAL_VARIANT/".$$conf{PROJECT}."_breakdancer.ctx";
+		print PINDEL "$$conf{BDMAX} -q 10 -d $$conf{BD_OUT} $breakd_conf > $$conf{BD_OUT}\n";
+		
+	}
+
+
+	# GENERATION OF CONFIGURATION FILE FOR PINDEL
+	my $pindel_conf = $$conf{DIR}."/".$$conf{PROJECT}."_pindel.conf";
+	open (PINDELCONF,">$pindel_conf");
+
+	for my $sample (@{$$conf{SAMPLES}}) {
+		my @bams = glob("$sample/MAPPING/*bwa_sv.bam");
+		for my $bam (@bams)
+		{
+			my $insertmetrics = $bam;
+			$insertmetrics =~ s/.bwa_sv.bam/.realigned.insertmetrics/;
+
+			open (INSERTMETRICS,"<", $$conf{DIR}."/".$insertmetrics);
+			while(<INSERTMETRICS>)
+			{
+				if (/^MEDIAN_INSERT_SIZE/){
+					my $l = <INSERTMETRICS>;
+					my @l = split "\t", $l; 
+					print PINDELCONF $$conf{DIR}."/".$bam."\t".$l[0]."\t".$sample."\n";
+					last;
+				}
+			}
+			close (INSERTMETRICS);
+		}
+	}
+	close (PINDELCONF);
+
+
+	# RUNNING PINDEL
+	print PINDEL "# PINDEL\n";
+	if (defined($$opts{BREAKD}))
+	{	
+	print PINDEL "$$conf{PINDEL} -f $$conf{GENOME} -i $pindel_conf -c ALL -b $$conf{BD_OUT} -o $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel\n";
+	} else {
+	print PINDEL "$$conf{PINDEL} -f $$conf{GENOME} -i $pindel_conf -c ALL -o $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel\n";
+	}
+
+	print PINDEL "$$conf{PINDELVCF} -r $$conf{GENOME} -R $$conf{GENOME} -d $$conf{GENOME} -P $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel -v $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.vcf -ss 1 -e 5 -f 1000 \n";
+
+	# SNPEFF
+	print PINDEL "# SNPEFF PINDEL\n";	
+	print PINDEL "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.vcf > $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.snpEff.vcf\n\n";
+
+	# SUBMIT BASH SCRIPT
+	my $pindel_err = $$conf{DIR}."/".$$conf{PROJECT}."_pindel.err";
+	system("bash $pindel_bash > $pindel_err") if (defined($$opts{SUBMIT})) ;
+	
+	
+	chdir $$conf{WDIR};
+
+}
+
+
+sub frecc
+{
+	# INPUT VARIABLES
+	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef);
+	
+	my $result = GetOptions ("c|conf:s"  => \$opts{CONF},
+							"d|dir:s"   => \$opts{DIR},
+							"t|threads:s"   => \$opts{THREADS},
+							"s|submit:s"   => \$opts{SUBMIT},
+							"sm|samples:s" => \$opts{SAMPLES}
+							);
+    
+    my $usage = qq/
+	Usage:  terminator frecc [options]
+	Options:
+	##\n\n/ ;             
+
+	
+	die ($usage) if ( !defined $opts{CONF} || !defined $opts{DIR} );
+
+	my $opts = \%opts;
+	
+	# CONFIGURATION OF THE PIPELINE
+	my $conf = _load_conf_file ( $$opts{CONF} );
+	$$conf{WDIR} = getcwd;	
+	my @dirsplit = split("/",$$opts{DIR});
+	$$conf{PROJECT} = pop @dirsplit;
+	$$conf{SCRIPTNAME} = $0;
+
+
+	# Get Samples Names
+	chdir $$opts{DIR};
+	$$conf{DIR} = getcwd;
+	
+	if (defined $$opts{SAMPLES})
+	{
+		@{$$conf{SAMPLES}} = split(",", $$opts{SAMPLES});
+	} else {
+		my @files = glob("*");
+		for ( @files )
+		{
+			next if (! -d $_);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			push @{$$conf{SAMPLES}}, $_;
+		}
+	}
+
+	# NEW DIRECTORY
+	$$conf{DIRFRECC}=$$conf{DIR}."/FRECC";
+	mkdir $$conf{DIRFRECC};
+	
+	# CREATING CONFIGURATION FILE AND BASH SCRIPT FOR EACH SAMPLE
+	my @frecc_bash;
+	for my $sample (@{$$conf{SAMPLES}}) 
+	{
+		open (CONFFRECC, ">$$conf{DIRFRECC}/$sample"."_frecc.conf");
+		my @bam = glob("$$conf{DIR}/$sample/MAPPING/*bwa_sv.bam");
+		if (!exists $bam[0])
+		{
+			print "Error: Realigned Bam file does not exist at for sample $sample @ $$conf{DIR}/$sample/MAPPING/\n";
+			next;
+		}	
+		print CONFFRECC "[general]\n";
+		for my $frecc_opt (split ",", $$conf{FREECGENERAL} )
+		{
+			print CONFFRECC $frecc_opt."=".$$conf{$frecc_opt}."\n";
+		}
+		print CONFFRECC "outputDir=$$conf{DIRFRECC}\n";
+		
+		print CONFFRECC "\n[sample]\n";
+		print CONFFRECC "mateFile=$bam[0]\n";
+		print CONFFRECC "inputFormat=BAM\n";
+		print CONFFRECC "mateOrientation=FR\n";
+
+		close (CONFFRECC);
+
+		open (BAHFFRECC, ">$$conf{DIRFRECC}/${sample}_frecc.sh");
+		push(@frecc_bash, "$$conf{DIRFRECC}/${sample}_frecc.sh");
+		print BAHFFRECC "#!/bin/bash\n#".$sample."_frecc.sh\n";
+		print BAHFFRECC "$$conf{FREEC} -conf $$conf{DIRFRECC}/${sample}_frecc.conf\n";
+		close (BAHFFRECC);
+	
+		chdir $$conf{DIR};
+	}
+
+
+	# CRON BASH FILE TO SUBMIT FRECC BASH SCRIPTS 
+	
+	my $frecc_cron = $$conf{DIR}."/".$$conf{PROJECT}."_frecc.sh";
+	open(FRECCCRON,">$frecc_cron");
+	print FRECCCRON "#!/bin/bash\n#$frecc_cron\n";
+	my $i = 0;
+	for my $frecc_bash (@frecc_bash) {
+		my $frecc_err = $frecc_bash;
+		$frecc_err =~ s/\.sh/\.err/;
+		print FRECCCRON "nohup bash ".$frecc_bash." > ".$frecc_err." &\n";
+		$i ++;
+		if ($i == $$opts{THREADS}) {
+			print FRECCCRON "wait\n";
+			$i = 0;
+		}
+	}
+
+	# SUBMIT BASH SCRIPT
+	system("bash $frecc_cron ") if (defined($$opts{SUBMIT})) ;
+	
+	
+	# CHANGE WORKING DIRECTORY 
+	chdir $$conf{WDIR};
+}
+
+
+
+sub _load_conf_file
+{
+	my ($file) = @_;
+	open (CONF,"<",$file);
+	my %out;
+	while (<CONF>) 
+	{
+		if(!/^#/ && /\w+/)
+		{
+			chomp;
+			my ($key,$val) = split(/=([^:]+)$/,$_);
+			$out{$key} = $val;
+		}
+	}
+	return \%out;
+}
