@@ -8,13 +8,14 @@ use Cwd 'abs_path';
 #use Carp;
 #use List::Util qw(sum);
 #TODO: make a sanity check to confirm all input files (e.g. genome, config) actually exist
+#TODO: make a samples loading function that reads from the samples file, rather than globbing the folders in the project folder
 
 &main;
 exit;
 
 sub _version
 {
-	return "20140724";
+	return "20151016";
 } 
 
 
@@ -23,7 +24,7 @@ sub main
   &usage if (@ARGV < 1);
 	  
   my $command = shift(@ARGV);
-  my %func = (usage=>\&usage,mapping=>\&mapping, vc=>\&variantcalling, vcfilter=>\&vcfilter, pindel=>\&pindel, frecc=>\&frecc);
+  my %func = (usage=>\&usage,mapping=>\&mapping, vc=>\&variantcalling, vcfilter=>\&vcfilter, pindel=>\&pindel, freec=>\&freec, evorha=>\&evorha);
   die("Unknown command \"$command\".\n") if (!defined($func{$command}));
   &{$func{$command}};
 }
@@ -33,9 +34,19 @@ sub usage
 {
 	my $version = _version;
 	die(qq/
-Usage:  terminator <command> [<arguments>]\n
-Usage stuff to go here\n
-
+Program:  terminator2 (Pipeline for analysis of next-generation sequence data of haploid whole genomes)
+Version:  $version
+Usage:    terminator2 <command> [<arguments>]\n
+Commands: mapping        Maps the FASTQ files to the reference genome specified in the configuration file. Performs quality checks on the reads.
+          variantcalling Finds variants using samtools and gatk 
+          pindel         Finds structural variants using pindel
+          freec          Finds copy number variants
+          evorha         Calculates haplotype frequencies (for mixed population samples).
+Options:  -c  configuration file, defines where programs and reference files are saved
+          -d  working directory
+          -t  threads, how many simultaneous instances of the pipeline to run (works for 'mapping' command)
+          -sm define the samples to be analyzed, otherwise the pipeline determines this from the folders in the working directory
+          -s  submit the pipeline job as soon as it is created, otherwise you can run it manually
 \n/);
 }
 
@@ -53,7 +64,7 @@ sub mapping
                                  );
     
     my $usage = qq/
-	Usage:  terminator mapping [options]
+	Usage: terminator2 mapping [options]
 	Options:
 	##\n\n/ ;             
 	
@@ -81,7 +92,7 @@ sub mapping
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -322,9 +333,9 @@ sub mapping
 			
 			$$conf{SAMTOOLS} index \$BWASORT
 
-			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -o \$TARGETSV
+			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -nt  $$opts{THREADS} -o \$TARGETSV
 			
-			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
+			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -nt $$opts{THREADS} -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
 
 			$$conf{SAMTOOLS} index \$BWASV
 			
@@ -465,7 +476,7 @@ sub variantcalling
 							);
     
     my $usage = qq/
-	Usage:  terminator vc [options]
+	Usage: terminator2 vc [options]
 	Options:
 	##\n\n/ ;             
 
@@ -495,7 +506,7 @@ sub variantcalling
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -536,7 +547,7 @@ sub variantcalling
 	# GATK
 	# Why is not GATK called with parallel processing? MT=>to save memory for other applications, can be added in later.
 	print VCSH "# GATK\n";	
-	print VCSH "java -jar $$conf{GATK} -T UnifiedGenotyper -R $$conf{GENOME} -ploidy 1 -glm BOTH -o VARIANTCALLING/$$conf{PROJECT}.raw1.gatk.vcf";
+	print VCSH "java -jar $$conf{GATK} -T UnifiedGenotyper -R $$conf{GENOME} -ploidy 1 -glm BOTH -nt $$opts{THREADS} -o VARIANTCALLING/$$conf{PROJECT}.raw1.gatk.vcf";
 	for my $sample (@{$$conf{SAMPLES}}) {
 		my @bams = glob("$sample/MAPPING/*realigned.bam");
 		for my $bam (@bams)
@@ -615,7 +626,7 @@ sub pindel
 							);
     
     my $usage = qq/
-	Usage:  terminator pindel [options]
+	Usage: terminator2 pindel [options]
 	Options:
 	##\n\n/ ;             
 
@@ -644,7 +655,7 @@ sub pindel
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -722,7 +733,7 @@ sub pindel
 
 	# SNPEFF
 	print PINDEL "# SNPEFF PINDEL\n";	
-	print PINDEL "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.vcf > $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.snpEff.vcf\n\n";
+	print PINDEL "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}.pindel.vcf > $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}.pindel.snpEff.vcf\n\n";
 
 	# SUBMIT BASH SCRIPT
 	my $pindel_err = $$conf{DIR}."/".$$conf{PROJECT}."_pindel.err";
@@ -734,7 +745,7 @@ sub pindel
 }
 
 
-sub frecc
+sub freec
 {
 	# INPUT VARIABLES
 	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef);
@@ -747,7 +758,7 @@ sub frecc
 							);
     
     my $usage = qq/
-	Usage:  terminator frecc [options]
+	Usage: terminator2 freec [options]
 	Options:
 	##\n\n/ ;             
 
@@ -776,80 +787,168 @@ sub frecc
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FRECC/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
 
 	# NEW DIRECTORY
-	$$conf{DIRFRECC}=$$conf{DIR}."/FRECC";
-	mkdir $$conf{DIRFRECC};
+	$$conf{DIRFREEC}=$$conf{DIR}."/FREEC";
+	mkdir $$conf{DIRFREEC};
 	
 	# CREATING CONFIGURATION FILE AND BASH SCRIPT FOR EACH SAMPLE
-	my @frecc_bash;
+	my @freec_bash;
 	for my $sample (@{$$conf{SAMPLES}}) 
 	{
-		open (CONFFRECC, ">$$conf{DIRFRECC}/$sample"."_frecc.conf");
+		open (CONFFREEC, ">$$conf{DIRFREEC}/$sample"."_freec.conf");
 		my @bam = glob("$$conf{DIR}/$sample/MAPPING/*bwa_sv.bam");
 		if (!exists $bam[0])
 		{
 			print "Error: Realigned Bam file does not exist at for sample $sample @ $$conf{DIR}/$sample/MAPPING/\n";
 			next;
 		}	
-		print CONFFRECC "[general]\n";
-		for my $frecc_opt (split ",", $$conf{FREECGENERAL} )
+		print CONFFREEC "[general]\n";
+		for my $freec_opt (split ",", $$conf{FREECGENERAL} )
 		{
-			print CONFFRECC $frecc_opt."=".$$conf{$frecc_opt}."\n";
+			print CONFFREEC $freec_opt."=".$$conf{$freec_opt}."\n";
 		}
-		print CONFFRECC "outputDir=$$conf{DIRFRECC}\n";
+		print CONFFREEC "outputDir=$$conf{DIRFREEC}\n";
 		
-		print CONFFRECC "\n[sample]\n";
-		print CONFFRECC "mateFile=$bam[0]\n";
-		print CONFFRECC "inputFormat=BAM\n";
-		print CONFFRECC "mateOrientation=FR\n";
+		print CONFFREEC "\n[sample]\n";
+		print CONFFREEC "mateFile=$bam[0]\n";
+		print CONFFREEC "inputFormat=BAM\n";
+		print CONFFREEC "mateOrientation=FR\n";
 
-#		print CONFFRECC "\n[control]\n";
-#		print CONFFRECC "mateFile=$bam[0]\n";
-#		print CONFFRECC "inputFormat=BAM\n";
-#		print CONFFRECC "mateOrientation=FR\n";
+#		print CONFFREEC "\n[control]\n";
+#		print CONFFREEC "mateFile=$bam[0]\n";
+#		print CONFFREEC "inputFormat=BAM\n";
+#		print CONFFREEC "mateOrientation=FR\n";
 
-		close (CONFFRECC);
+		close (CONFFREEC);
 
-		open (BAHFFRECC, ">$$conf{DIRFRECC}/${sample}_frecc.sh");
-		push(@frecc_bash, "$$conf{DIRFRECC}/${sample}_frecc.sh");
-		print BAHFFRECC "#!/bin/bash\n#".$sample."_frecc.sh\n";
-		print BAHFFRECC "$$conf{FREEC} -conf $$conf{DIRFRECC}/${sample}_frecc.conf\n";
-		close (BAHFFRECC);
+		open (BAHFFREEC, ">$$conf{DIRFREEC}/${sample}_freec.sh");
+		push(@freec_bash, "$$conf{DIRFREEC}/${sample}_freec.sh");
+		print BAHFFREEC "#!/bin/bash\n#".$sample."_freec.sh\n";
+		print BAHFFREEC "$$conf{FREEC} -conf $$conf{DIRFREEC}/${sample}_freec.conf\n";
+		close (BAHFFREEC);
 	
 		chdir $$conf{DIR};
 	}
 
 
-	# CRON BASH FILE TO SUBMIT FRECC BASH SCRIPTS 
+	# CRON BASH FILE TO SUBMIT FREEC BASH SCRIPTS 
 	
-	my $frecc_cron = $$conf{DIR}."/".$$conf{PROJECT}."_frecc.sh";
-	open(FRECCCRON,">$frecc_cron");
-	print FRECCCRON "#!/bin/bash\n#$frecc_cron\n";
+	my $freec_cron = $$conf{DIR}."/".$$conf{PROJECT}."_freec.sh";
+	open(FREECCRON,">$freec_cron");
+	print FREECCRON "#!/bin/bash\n#$freec_cron\n";
 	my $i = 0;
-	for my $frecc_bash (@frecc_bash) {
-		my $frecc_err = $frecc_bash;
-		$frecc_err =~ s/\.sh/\.err/;
-		print FRECCCRON "nohup bash ".$frecc_bash." > ".$frecc_err." &\n";
+	for my $freec_bash (@freec_bash) {
+		my $freec_err = $freec_bash;
+		$freec_err =~ s/\.sh/\.err/;
+		print FREECCRON "nohup bash ".$freec_bash." > ".$freec_err." &\n";
 		$i ++;
 		if ($i == $$opts{THREADS}) {
-			print FRECCCRON "wait\n";
+			print FREECCRON "wait\n";
 			$i = 0;
 		}
 	}
 
 	# SUBMIT BASH SCRIPT
-	system("bash $frecc_cron ") if (defined($$opts{SUBMIT})) ;
+	system("bash $freec_cron ") if (defined($$opts{SUBMIT})) ;
 	
 	
 	# CHANGE WORKING DIRECTORY 
 	chdir $$conf{WDIR};
 }
 
+##############################################################################################
+sub evorha
+{
+	# INPUT VARIABLES
+	my %opts = (CONF=>undef, DIR=>undef, THREADS=> 1, SUBMIT=>undef, SAMPLES=>undef);
+	
+	my $result = GetOptions ("c|conf:s"  => \$opts{CONF},
+							"d|dir:s"   => \$opts{DIR},
+							"t|threads:s"   => \$opts{THREADS},
+							"s|submit:s"   => \$opts{SUBMIT},
+							"sm|samples:s" => \$opts{SAMPLES}
+							);
+    
+    my $usage = qq/
+	Usage:  terminator evorha [options]
+	Options:
+	##\n\n/ ;             
+
+	
+	die ($usage) if ( !defined $opts{CONF} || !defined $opts{DIR} );
+
+	my $opts = \%opts;
+	
+	# CONFIGURATION OF THE PIPELINE
+	my $conf = _load_conf_file ( $$opts{CONF} );
+	$$conf{WDIR} = getcwd;	
+	my @dirsplit = split("/",$$opts{DIR});
+	$$conf{PROJECT} = pop @dirsplit;
+	$$conf{SCRIPTNAME} = $0;
+
+
+	# Get Samples Names
+	chdir $$opts{DIR};
+	$$conf{DIR} = getcwd;
+	
+	if (defined $$opts{SAMPLES})
+	{
+		@{$$conf{SAMPLES}} = split(",", $$opts{SAMPLES});
+	} else {
+		my @files = glob("*");
+		for ( @files )
+		{
+			next if (! -d $_);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			push @{$$conf{SAMPLES}}, $_;
+		}
+	}
+
+	# NEW DIRECTORY
+	$$conf{DIREVORHA}=$$conf{DIR}."/EVORHA";
+	mkdir $$conf{DIREVORHA};
+	
+	# CREATING BASH SCRIPT FOR EACH SAMPLE
+	my $evorha_bash = $$conf{DIR}."/".$$conf{PROJECT}."_evorha.sh";
+	my $evorha_err = $evorha_bash;
+	$evorha_err =~ s/\.sh/\.err/;
+		my @bam = glob("$$conf{DIR}/*/MAPPING/*realigned.bam");
+		if (scalar @bam==0)
+		{
+			print "Error: no realigned BAM files found in MAPPING folders.\n";
+		}	
+		open (BASHEVORHA, ">$evorha_bash");
+		print BASHEVORHA "#!/bin/bash\n#".$$conf{PROJECT}."_evorha.sh\n";
+		my $i = 0;
+		for my $bam (@bam)
+		{
+			print BASHEVORHA "nohup bash java -jar $$conf{EVORHA} completeAnalysis $$conf{GENOME} $bam &\n"; #Assumes there is a matching .gff file to GENOME
+		$i ++;
+		if ($i == $$opts{THREADS}) {
+			print BASHEVORHA "wait\n";
+			$i = 0;
+		}
+
+		}
+
+		close (BASHEVORHA);
+		chdir $$conf{DIR};
+
+	# SUBMIT BASH SCRIPT
+	system("bash $evorha_bash ") if (defined($$opts{SUBMIT})) ;
+	
+	
+	# CHANGE WORKING DIRECTORY 
+	chdir $$conf{WDIR};
+}
+
+
+##########################################################################################
 
 
 sub _load_conf_file
@@ -868,3 +967,20 @@ sub _load_conf_file
 	}
 	return \%out;
 }
+
+#sub _load_samples_file
+#{
+#	my ($file) = @_;
+#	open (SAMP,"<",$file);
+#	my %out;
+#	while (<SAMP>) 
+#	{
+#		if(!/^#/ && /\w+/)
+#		{
+#			chomp;
+#			my ($key,$val) = split(/\t([^:]+)$/,$_);
+#			$out{$key} = $val;
+#		}
+#	}
+#	return \%out;
+#}
