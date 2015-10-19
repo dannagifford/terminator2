@@ -335,7 +335,7 @@ sub mapping
 
 			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -nt  $$opts{THREADS} -o \$TARGETSV
 			
-			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -nt $$opts{THREADS} -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
+			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
 
 			$$conf{SAMTOOLS} index \$BWASV
 			
