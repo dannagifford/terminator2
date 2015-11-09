@@ -231,34 +231,34 @@ sub mapping
 		printf "Step\\tRead1\\tRead2\\tUnPaired\\tMean_Length1\\tMean_Length2\\tMean_Length_UnPaired\\n" > $summary_reads_table
 		
 		printf "Original\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ\/*_2.fastq | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ\/*_2.fastq | wc -l)"\\t" >> $summary_reads_table
 		printf "NA\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ\/*_1.fastq | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ\/*_2.fastq | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf "NA\\n" >> $summary_reads_table
 		
 		printf "Trimmed1\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed | wc -l)"\\t" >> $summary_reads_table
 		printf "NA\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf "NA\\n" >> $summary_reads_table
 
 		printf "Filtered\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads | wc -l)"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\n" >> $summary_reads_table
 
 
 		printf "Trimmed2\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
-		printf \$(grep \@HISEQ2000 $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered_trimmed | wc -l)"\\t" >> $summary_reads_table
+		printf \$(grep $$conf{SEQTECH} $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads_trimmed | wc -l)"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_1.fastq_trimmed_filtered_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*_2.fastq_trimmed_filtered_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\t" >> $summary_reads_table
 		printf \$(cat $$conf{DIR}\/$sample\/FASTQ_QC\/*trimmed_unPaired_HQReads_trimmed | awk \'{if(NR\%4==2) print length(\$1)}\' | awk \'{if(min==""){min=max=\$1}; if(\$1>max) {max=\$1}; if(\$1<min) {min=\$1}; total+=\$1; count+=1} END {print total\/count}\')"\\n" >> $summary_reads_table		

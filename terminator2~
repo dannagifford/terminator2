@@ -733,7 +733,7 @@ sub pindel
 
 	# SNPEFF
 	print PINDEL "# SNPEFF PINDEL\n";	
-	print PINDEL "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}.pindel.vcf > $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}.pindel.snpEff.vcf\n\n";
+	print PINDEL "java -jar $$conf{SNPEFF} -c $$conf{SNPEFFCONF} $$conf{SNPEFFOPTS} $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.vcf > $$conf{DIR}/STRUCTURAL_VARIANT/$$conf{PROJECT}_pindel.snpEff.vcf\n\n";
 
 	# SUBMIT BASH SCRIPT
 	my $pindel_err = $$conf{DIR}."/".$$conf{PROJECT}."_pindel.err";
