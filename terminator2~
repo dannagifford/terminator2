@@ -92,7 +92,7 @@ sub mapping
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA|BRESEQ/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -333,9 +333,9 @@ sub mapping
 			
 			$$conf{SAMTOOLS} index \$BWASORT
 
-			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -o \$TARGETSV
+			java -jar $$conf{GATK} -T RealignerTargetCreator -I \$BWASORT -R $$conf{GENOME} -nt  $$opts{THREADS} -o \$TARGETSV
 			
-			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -nt  $$opts{THREADS} -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
+			java -jar $$conf{GATK} -T IndelRealigner -I \$BWASORT -R $$conf{GENOME} -targetIntervals \$TARGETSV -o \$BWASV --maxConsensuses 60 --maxReadsForConsensuses 240 --maxReadsForRealignment 20000
 
 			$$conf{SAMTOOLS} index \$BWASV
 			
@@ -506,7 +506,7 @@ sub variantcalling
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA|BRESEQ/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -655,7 +655,7 @@ sub pindel
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA|BRESEQ/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -787,7 +787,7 @@ sub freec
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA|BRESEQ/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
@@ -904,14 +904,13 @@ sub evorha
 		for ( @files )
 		{
 			next if (! -d $_);
-			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA/);
+			next if ($_ =~ m/VARIANTCALLING|STRUCTURAL_VARIANT|FREEC|EVORHA|BRESEQ/);
 			push @{$$conf{SAMPLES}}, $_;
 		}
 	}
 
 	# NEW DIRECTORY
 	$$conf{DIREVORHA}=$$conf{DIR}."/EVORHA";
-	mkdir $$conf{DIREVORHA};
 	
 	# CREATING BASH SCRIPT FOR EACH SAMPLE
 	my $evorha_bash = $$conf{DIR}."/".$$conf{PROJECT}."_evorha.sh";
@@ -923,11 +922,12 @@ sub evorha
 			print "Error: no realigned BAM files found in MAPPING folders.\n";
 		}	
 		open (BASHEVORHA, ">$evorha_bash");
-		print BASHEVORHA "#!/bin/bash\n#".$$conf{PROJECT}."_evorha.sh\n";
+		print BASHEVORHA "#!/bin/bash\n#".$evorha_bash."\n";
+		print BASHEVORHA "mkdir $$conf{DIREVORHA}\n";
 		my $i = 0;
 		for my $bam (@bam)
 		{
-			print BASHEVORHA "nohup bash java -jar $$conf{EVORHA} completeAnalysis $$conf{GENOME} $bam &\n"; #Assumes there is a matching .gff file to GENOME
+			print BASHEVORHA "cd $$conf{DIREVORHA} && nohup java -jar $$conf{EVORHA} completeAnalysis $$conf{GENOME} ".$bam." &\n"; #Assumes there is a matching .gff file to GENOME
 		$i ++;
 		if ($i == $$opts{THREADS}) {
 			print BASHEVORHA "wait\n";
